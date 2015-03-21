@@ -437,28 +437,41 @@
 (defn- to-executor-id [task-ids]
   [(first task-ids) (last task-ids)])
 
+;; 计算executor详细信息（[starttask endtask] ...)
 (defn- compute-executors [nimbus storm-id]
   (let [conf (:conf nimbus)
+        ;; 从zookeeper中读取storm-base信息
         storm-base (.storm-base (:storm-cluster-state nimbus) storm-id nil)
+        ;; 从storm-base中取出component对应的executor数目，一般是设置的并行程度
         component->executors (:component->executors storm-base)
+        ;; 从本地文件中读取topology配置信息
         storm-conf (read-storm-conf conf storm-id)
+        ;; 从本地文件汇总读取topology定义数据，不包括系统component和流
         topology (read-storm-topology conf storm-id)
+        ;; 计算component的task编号{1 comp1, 2 comp1, 3 comp3,...}
         task->component (storm-task-info topology storm-conf)]
     (->> (storm-task-info topology storm-conf)
          reverse-map
          (map-val sort)
          (join-maps component->executors)
+         ;; 为task分配executor
          (map-val (partial apply partition-fixed))
          (mapcat second)
          (map to-executor-id)
          )))
 
+;; 计算{executor componentid}
 (defn- compute-executor->component [nimbus storm-id]
   (let [conf (:conf nimbus)
+        ;; 计算给定topology的所有executor信息([starttask endtask]..)
         executors (compute-executors nimbus storm-id)
+        ;; 读取topology定义数据，不包含系统component
         topology (read-storm-topology conf storm-id)
+        ;; 从本地文件读取topology配置文件
         storm-conf (read-storm-conf conf storm-id)
+        ;; 计算{taskid componentid}，此时加入了系统component
         task->component (storm-task-info topology storm-conf)
+        ;; 构造{executor componentid}
         executor->component (into {} (for [executor executors
                                            :let [start-task (first executor)
                                                  component (task->component start-task)]]

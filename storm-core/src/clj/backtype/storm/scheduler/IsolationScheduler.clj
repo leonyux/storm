@@ -32,14 +32,22 @@
 (defn -prepare [this conf]
   (container-set! (.state this) conf))
 
+;; 返回executor分组信息，根据worker数目轮询分组，得到#{#{executers}...}分组信息
 (defn- compute-worker-specs "Returns mutable set of sets of executors"
   [^TopologyDetails details]
+  ;; 从TopologyDetails中读取{executor componentid}信息
   (->> (.getExecutorToComponent details)
+       ;; 反转映射得到{componentid [executors]}
        reverse-map
+       ;; 得到([executors]..)
        (map second)
+       ;; [executors]
        (apply concat)
+       ;; ([workerid executor]...) 轮转将executor分配到各worker上，workerid 0开始
        (map vector (repeat-seq (range (.getNumWorkers details))))
+       ;; group同一worker上的executor
        (group-by first)
+       ;; 得到((executers)...)分组信息
        (map-val #(map second %))
        vals
        (map set)
@@ -57,20 +65,24 @@
        (map (fn [t] {(.getId t) (compute-worker-specs t)}))
        (apply merge)))
 
+;; 将topology的worker均匀的分配到给定的机器数目，并不可以指定具体的机器
 (defn machine-distribution [conf ^TopologyDetails topology]
   (let [name->machines (get conf ISOLATION-SCHEDULER-MACHINES)
         machines (get name->machines (.getName topology))
         workers (.getNumWorkers topology)]
+    ;; 将workers均匀的分配到给定的机器上
     (-> (integer-divided workers machines)
         (dissoc 0)
         (HashMap.)
         )))
 
+;; 生成{tid {workers machines}}worker分配信息
 (defn topology-machine-distribution [conf iso-topologies]
   (->> iso-topologies
        (map (fn [t] {(.getId t) (machine-distribution conf t)}))
        (apply merge)))
 
+;; 把当前的分配按照host分组{host [[slot topid #{executors}]...]}
 (defn host-assignments [^Cluster cluster]
   (letfn [(to-slot-specs [^SchedulerAssignment ass]
             (->> ass
@@ -85,6 +97,7 @@
        (group-by (fn [[^WorkerSlot slot & _]] (.getHost cluster (.getNodeId slot))))
        )))
 
+;; 从distribution中去除当前节点的分配
 (defn- decrement-distribution! [^Map distribution value]
   (let [v (-> distribution (get value) dec)]
     (if (zero? v)
@@ -94,14 +107,15 @@
 ;; returns list of list of slots, reverse sorted by number of slots
 (defn- host-assignable-slots [^Cluster cluster]
   (-<> cluster
-       .getAssignableSlots
-       (group-by #(.getHost cluster (.getNodeId ^WorkerSlot %)) <>)
+       .getAssignableSlots;; 获取所有可以分配的slot，包括已占用的
+       (group-by #(.getHost cluster (.getNodeId ^WorkerSlot %)) <>);; 按照主机group这些slot
        (dissoc <> nil)
-       (sort-by #(-> % second count -) <>)
-       shuffle
+       (sort-by #(-> % second count -) <>);; 按可用slot数从大到小排序
+       shuffle ;;打乱顺序？
        (LinkedList. <>)
        ))
 
+;; 统计每个节点上使用了的slot
 (defn- host->used-slots [^Cluster cluster]
   (->> cluster
        .getUsedSlots
@@ -155,34 +169,47 @@
 ;; run default scheduler on isolated topologies that didn't have enough slots + non-isolated topologies on remaining machines
 ;; set blacklist to what it was initially
 (defn -schedule [this ^Topologies topologies ^Cluster cluster]
-  (let [conf (container-get (.state this))        
+  (let [conf (container-get (.state this))
+        ;; 获取黑名单中的节点        
         orig-blacklist (HashSet. (.getBlacklistedHosts cluster))
+        ;; 获取隔离调度的topology TopologyDetails集合
         iso-topologies (isolated-topologies conf (.getTopologies topologies))
+        ;; 获取隔离调度的topology Topology id集合
         iso-ids-set (->> iso-topologies (map #(.getId ^TopologyDetails %)) set)
+        ;; 获取executor分组信息，根据分配的worker数，得到{tid #{#{executers}...}}分组信息
         topology-worker-specs (topology-worker-specs iso-topologies)
+        ;; 生成{tid {workers machines}}worker分配信息
         topology-machine-distribution (topology-machine-distribution conf iso-topologies)
+        ;; 把当前的分配按照host分组{host [[slot topid #{executors}]...]}
         host-assignments (host-assignments cluster)]
     (doseq [[host assignments] host-assignments]
+      ;; 取出第一个slot的topolgyid ??
       (let [top-id (-> assignments first second)
+            ;; 从需隔离调度的topology信息中获取该topology的worker分布信息{workers machines}
             distribution (get topology-machine-distribution top-id)
+            ;; 从需隔离调度的topology信息中获取#{#{executors}..}executor的分组信息
             ^Set worker-specs (get topology-worker-specs top-id)
+            ;; 该节点上的worker数量
             num-workers (count assignments)
             ]
+        ;; 判断该topology是否属于需要隔离调度的topology，是否该节点的slot都分配给了一个topology
+                       ;; 判断该节点上的分配的slot是否满足了计算的分配数目要求，executor是否正确分配
         (if (and (contains? iso-ids-set top-id)
                  (every? #(= (second %) top-id) assignments)
                  (contains? distribution num-workers)
                  (every? #(contains? worker-specs (nth % 2)) assignments))
-          (do (decrement-distribution! distribution num-workers)
-              (doseq [[_ _ executors] assignments] (.remove worker-specs executors))
-              (.blacklistHost cluster host))
+          (do (decrement-distribution! distribution num-workers);; 从distribution中去除当前节点的分配，注意HashMap可变
+              (doseq [[_ _ executors] assignments] (.remove worker-specs executors));; 从worker-specs中去除本机executor的分配，注意HashSet可变
+              (.blacklistHost cluster host)) ;; 将host放入blacklist
           (doseq [[slot top-id _] assignments]
-            (when (contains? iso-ids-set top-id)
+            (when (contains? iso-ids-set top-id);; 当该topology属于需要隔离分配，但是没满足条件的，释放所占用slot
               (.freeSlot cluster slot)
               ))
           )))
     
+    ;; 统计每个节点上占用了的slot
     (let [host->used-slots (host->used-slots cluster)
-          ^LinkedList sorted-assignable-hosts (host-assignable-slots cluster)]
+          ^LinkedList sorted-assignable-hosts (host-assignable-slots cluster)] ;; 排序了的可分配的{host [slots]}，最后的shuffle什么用？
       ;; TODO: can improve things further by ordering topologies in terms of who needs the least workers
       (doseq [[top-id worker-specs] topology-worker-specs
               :let [amts (distribution->sorted-amts (get topology-machine-distribution top-id))]]
