@@ -404,6 +404,7 @@
     (.shutdownNow (get dr WorkerTopologyContext/SHARED_EXECUTOR))
     (log-message "Shut down default resources")))
 
+;; 覆盖系统登录配置java.security.auth.login.config
 (defn- override-login-config-with-system-property [conf]
   (if-let [login_conf_file (System/getProperty "java.security.auth.login.config")]
     (assoc conf "java.security.auth.login.config" login_conf_file)
@@ -417,18 +418,18 @@
   (log-message "Launching worker for " storm-id " on " assignment-id ":" port " with id " worker-id
                " and conf " conf)
   (if-not (local-mode? conf)
-    (redirect-stdio-to-slf4j!))
+    (redirect-stdio-to-slf4j!)) ;; 如果是分布模式，重定向stdio至日志系统
   ;; because in local mode, its not a separate
   ;; process. supervisor will register it in this case
   (when (= :distributed (cluster-mode conf))
-    (touch (worker-pid-path conf worker-id (process-pid))))
-  (let [storm-conf (read-supervisor-storm-conf conf storm-id)
-        storm-conf (override-login-config-with-system-property storm-conf)
-        acls (Utils/getWorkerACL storm-conf)
-        cluster-state (cluster/mk-distributed-cluster-state conf :auth-conf storm-conf :acls acls)
-        storm-cluster-state (cluster/mk-storm-cluster-state cluster-state :acls acls)
-        initial-credentials (.credentials storm-cluster-state storm-id nil)
-        auto-creds (AuthUtils/GetAutoCredentials storm-conf)
+    (touch (worker-pid-path conf worker-id (process-pid)))) ;; 分布模式时，创建pid文件
+  (let [storm-conf (read-supervisor-storm-conf conf storm-id) ;; 用topology的配置覆盖节点配置
+        storm-conf (override-login-config-with-system-property storm-conf) ;; 覆盖系统登录配置java.security.auth.login.config
+        acls (Utils/getWorkerACL storm-conf) ;; 获取worker zookeeper acl信息
+        cluster-state (cluster/mk-distributed-cluster-state conf :auth-conf storm-conf :acls acls) ;; 获取zkstate，两部方式，与nimbus和supervisor不用，为何？
+        storm-cluster-state (cluster/mk-storm-cluster-state cluster-state :acls acls) ;; 导致solo?为false
+        initial-credentials (.credentials storm-cluster-state storm-id nil) ;; 获取topology的credential信息
+        auto-creds (AuthUtils/GetAutoCredentials storm-conf) ;; autocredential
         subject (AuthUtils/populateSubject nil auto-creds initial-credentials)]
       (Subject/doAs subject (reify PrivilegedExceptionAction 
         (run [this]
@@ -543,7 +544,7 @@
   (fn [] (exit-process! 1 "Worker died")))
 
 (defn -main [storm-id assignment-id port-str worker-id]  
-  (let [conf (read-storm-config)]
-    (validate-distributed-mode! conf)
-    (let [worker (mk-worker conf nil storm-id assignment-id (Integer/parseInt port-str) worker-id)]
-      (add-shutdown-hook-with-force-kill-in-1-sec #(.shutdown worker)))))
+  (let [conf (read-storm-config)] ;; 读取配置文件
+    (validate-distributed-mode! conf) ;; 验证是否处于分布模式，非分布模式不会以此方式启动进程
+    (let [worker (mk-worker conf nil storm-id assignment-id (Integer/parseInt port-str) worker-id)] ;; 启动worker
+      (add-shutdown-hook-with-force-kill-in-1-sec #(.shutdown worker))))) ;; 注册jvm shutdownhook

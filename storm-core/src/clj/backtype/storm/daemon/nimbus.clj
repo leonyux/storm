@@ -323,6 +323,7 @@
       [(.getNodeId slot) (.getPort slot)]
       )))
 
+;; 本地创建文件夹保存storm代码，以及序列化了的storm配置信息，storm代码依赖的jar包
 (defn- setup-storm-code [conf storm-id tmp-jar-location storm-conf topology]
   (let [stormroot (master-stormdist-root conf storm-id)]
    (log-message "nimbus file location:" stormroot)

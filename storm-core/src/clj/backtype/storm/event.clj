@@ -43,7 +43,7 @@
                        (log-message "Event manager interrupted while doing IO"))
                      (catch InterruptedException t
                        (log-message "Event manager interrupted"))
-                     (catch Throwable t
+                     (catch Throwable t ;; 当捕获到错误异常，终止进程
                        (log-error t "Error when processing event")
                        (exit-process! 20 "Error when processing an event")))))]
     (.setDaemon runner daemon?)
@@ -61,10 +61,10 @@
 
       (waiting?
         [this]
-        (or (Time/isThreadWaiting runner)
+        (or (Time/isThreadWaiting runner) ;; 得首先启动simulating模式，否则会抛出异常
             (= @processed @added)))
 
-      (shutdown
+      (shutdown ;; 中断处理线程，并等待结束
         [this]
         (reset! running false)
         (.interrupt runner)

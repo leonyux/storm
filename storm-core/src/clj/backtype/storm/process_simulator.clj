@@ -34,6 +34,7 @@
   []
   (vals @process-map))
 
+;; 杀死进程的工具函数
 (defn kill-process
   "Uses `locking` in case cluster shuts down while supervisor is
   killing a task"
@@ -43,7 +44,7 @@
     (let [shutdownable (process-handle pid)]
       (swap! process-map dissoc pid)
       (when shutdownable
-        (.shutdown shutdownable)))))
+        (.shutdown shutdownable))))) ;; 调用shutdownable的shutdown函数
 
 (defn kill-all-processes
   []

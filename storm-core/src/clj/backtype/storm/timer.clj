@@ -83,6 +83,7 @@
   (when-not @(:active timer)
     (throw (IllegalStateException. "Timer is not active"))))
 
+;; 将传入的函数加入传入的timer中，生成uuid，以delay-secs为延迟
 (defnk schedule
   [timer delay-secs afn :check-active true]
   (when check-active (check-active! timer))
@@ -91,6 +92,7 @@
     (locking (:lock timer)
       (.add queue [(+ (current-time-millis) (secs-to-millis-long delay-secs)) afn id]))))
 
+;; 递归的将函数加入timer，第一次延迟delay-secs，以后每次延迟recur-secs
 (defn schedule-recurring
   [timer delay-secs recur-secs afn]
   (schedule timer

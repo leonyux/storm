@@ -68,6 +68,7 @@
                            (.get nil)))]))
        (into {})))
 
+;; STORM-CLUSTER-MODE在哪里定义？减号换成下划线，clojure-config-name函数完成
 (defn cluster-mode
   [conf & args]
   (keyword (conf STORM-CLUSTER-MODE)))
@@ -206,6 +207,7 @@
   [conf]
   (LocalState. (str (supervisor-local-dir conf) file-path-separator "localstate")))
 
+;; 用topology的配置覆盖传入的conf
 (defn read-supervisor-storm-conf
   [conf storm-id]
   (let [stormroot (supervisor-stormdist-root conf storm-id)
@@ -226,6 +228,7 @@
 (defn worker-user-file [conf worker-id]
   (str (worker-user-root conf) "/" worker-id))
 
+;; 读取worker-user文件内容
 (defn get-worker-user [conf worker-id]
   (log-message "GET worker-user " worker-id)
   (try

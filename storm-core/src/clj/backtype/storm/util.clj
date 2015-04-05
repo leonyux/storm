@@ -210,6 +210,7 @@
 
 (def memoized-local-hostname (memoize local-hostname))
 
+;; 检查配置文件中STORM_LOCAL_HOSTNAME,如果没有配置，通过InetAddress.getLocalHost.getCanaonicalHostName获取主机名
 ;; checks conf for STORM_LOCAL_HOSTNAME.
 ;; when unconfigured, falls back to (memoized) guess by `local-hostname`.
 (defn hostname
@@ -440,6 +441,8 @@
   [pid]
   (send-signal-to-process pid sig-kill))
 
+;; 使用sigterm终止进程
+;; kill -15
 (defn kill-process-with-sig-term
   [pid]
   (send-signal-to-process pid sig-term))
@@ -518,19 +521,20 @@
     script-path
   ))
 
+;; 启动进程
 (defnk launch-process
   [command :environment {} :log-prefix nil :exit-code-callback nil]
   (let [builder (ProcessBuilder. command)
         process-env (.environment builder)]
-    (.redirectErrorStream builder true)
-    (doseq [[k v] environment]
+    (.redirectErrorStream builder true) ;; 重定向stderr到stdout
+    (doseq [[k v] environment] ;; 设置环境变量
       (.put process-env k v))
-    (let [process (.start builder)]
+    (let [process (.start builder)] ;; 启动进程
       (if (or log-prefix exit-code-callback)
-        (async-loop
+        (async-loop ;; 启动另一线程，为worker记录错误，在worker结束时注册dead
          (fn []
            (if log-prefix
-             (read-and-log-stream log-prefix (.getInputStream process)))
+             (read-and-log-stream log-prefix (.getInputStream process))) ;; 日志进程的stdout，应该都是stderr
            (when exit-code-callback
              (try
                (.waitFor process)

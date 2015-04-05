@@ -107,7 +107,7 @@
 ;; returns list of list of slots, reverse sorted by number of slots
 (defn- host-assignable-slots [^Cluster cluster]
   (-<> cluster
-       .getAssignableSlots;; 获取所有可以分配的slot，包括已占用的
+       .getAssignableSlots;; 获取所有可以分配的slot，包括已占用的，从supervisor信息中统计
        (group-by #(.getHost cluster (.getNodeId ^WorkerSlot %)) <>);; 按照主机group这些slot
        (dissoc <> nil)
        (sort-by #(-> % second count -) <>);; 按可用slot数从大到小排序
@@ -115,13 +115,14 @@
        (LinkedList. <>)
        ))
 
-;; 统计每个节点上使用了的slot
+;; 统计每个节点上使用了的slot，{host->slots}
 (defn- host->used-slots [^Cluster cluster]
   (->> cluster
        .getUsedSlots
        (group-by #(.getHost cluster (.getNodeId ^WorkerSlot %)))
        ))
 
+;; 从大到小排列worker的分配信息（worknums)
 (defn- distribution->sorted-amts [distribution]
   (->> distribution
        (mapcat (fn [[val amt]] (repeat amt val)))
@@ -178,18 +179,18 @@
         iso-ids-set (->> iso-topologies (map #(.getId ^TopologyDetails %)) set)
         ;; 获取executor分组信息，根据分配的worker数，得到{tid #{#{executers}...}}分组信息
         topology-worker-specs (topology-worker-specs iso-topologies)
-        ;; 生成{tid {workers machines}}worker分配信息
+        ;; 生成{tid {workers machines}}worker分配信息，按照配置的worker数和机器数做分配计划
         topology-machine-distribution (topology-machine-distribution conf iso-topologies)
-        ;; 把当前的分配按照host分组{host [[slot topid #{executors}]...]}
+        ;; 把当前的分配按照host分组{host [[slot topid #{executors}]...]}，为当前真实分配信息
         host-assignments (host-assignments cluster)]
     (doseq [[host assignments] host-assignments]
-      ;; 取出第一个slot的topolgyid ??
+      ;; 取出第一个slot的topolgyid
       (let [top-id (-> assignments first second)
-            ;; 从需隔离调度的topology信息中获取该topology的worker分布信息{workers machines}
+            ;; 从需隔离调度的topology信息中获取该topology的worker计划分布信息{workers machines}
             distribution (get topology-machine-distribution top-id)
-            ;; 从需隔离调度的topology信息中获取#{#{executors}..}executor的分组信息
+            ;; 从需隔离调度的topology信息中获取#{#{executors}..}executor的计划分组信息
             ^Set worker-specs (get topology-worker-specs top-id)
-            ;; 该节点上的worker数量
+            ;; 当前的实际分配中，该节点上的worker数量
             num-workers (count assignments)
             ]
         ;; 判断该topology是否属于需要隔离调度的topology，是否该节点的slot都分配给了一个topology
@@ -207,17 +208,21 @@
               ))
           )))
     
-    ;; 统计每个节点上占用了的slot
+    ;; 上面已经移除了满足了隔离分配要求的分配计划，下面这段针对未满足计划的进行分配
+    ;; 统计每个节点上占用了的slot, {host #{slots}}
     (let [host->used-slots (host->used-slots cluster)
-          ^LinkedList sorted-assignable-hosts (host-assignable-slots cluster)] ;; 排序了的可分配的{host [slots]}，最后的shuffle什么用？
+          ^LinkedList sorted-assignable-hosts (host-assignable-slots cluster)] ;; 排序了的可分配的{host #{slots}}，最后的shuffle什么用？排除了blacklist节点
       ;; TODO: can improve things further by ordering topologies in terms of who needs the least workers
+      ;; 对每个topology的#{#{executors}..}executor分组进行操作
       (doseq [[top-id worker-specs] topology-worker-specs
+              ;; 从大到小的worker分配,(workers1 workers2 ....)
               :let [amts (distribution->sorted-amts (get topology-machine-distribution top-id))]]
         (doseq [amt amts
                 :let [[host host-slots] (.peek sorted-assignable-hosts)]]
+          ;; 当节点可分配slot满足该拓扑的worker数时，从可分配slots中移除该节点，并且释放该节点的slots
           (when (and host-slots (>= (count host-slots) amt))
             (.poll sorted-assignable-hosts)
-            (.freeSlots cluster (get host->used-slots host))
+            (.freeSlots cluster (get host->used-slots host));; 释放已占用的slot
             (doseq [slot (take amt host-slots)
                     :let [executors-set (remove-elem-from-set! worker-specs)]]
               (.assign cluster slot top-id executors-set))
@@ -242,5 +247,5 @@
               (.freeSlots cluster slots)
               )))
         ))
-    (.setBlacklistedHosts cluster orig-blacklist)
+    (.setBlacklistedHosts cluster orig-blacklist);; 还原blacklist，中间blacklist没看到祈祷作用？
     ))

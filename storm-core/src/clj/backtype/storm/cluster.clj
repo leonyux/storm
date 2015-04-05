@@ -83,12 +83,12 @@
        [this path data acls]
        (zk/mkdirs zk (parent-path path) acls)
        (if (zk/exists zk path false)
-         (try-cause
+         (try-cause ;; 如果节点存在，设置数据
            (zk/set-data zk path data) ; should verify that it's ephemeral
            (catch KeeperException$NoNodeException e
              (log-warn-error e "Ephemeral node disappeared between checking for existing and setting data")
              (zk/create-node zk path data :ephemeral acls)))
-         (zk/create-node zk path data :ephemeral acls)))
+         (zk/create-node zk path data :ephemeral acls))) ;; 创建临时节点
 
      (create-sequential
        [this path data acls]
@@ -277,7 +277,7 @@
         credentials-callback (atom {})
         state-id (register
                   cluster-state
-                  (fn [type path]
+                  (fn [type path] ;; 注册zk watcher，当zk数据事件发生时被调用
                     (let [[subtree & args] (tokenize-path path)]
                       (condp = subtree
                          ASSIGNMENTS-ROOT (if (empty? args)
@@ -289,7 +289,7 @@
                          ;; this should never happen
                          (exit-process! 30 "Unknown callback for subtree " subtree args)))))]
     (doseq [p [ASSIGNMENTS-SUBTREE STORMS-SUBTREE SUPERVISORS-SUBTREE WORKERBEATS-SUBTREE ERRORS-SUBTREE]]
-      (mkdirs cluster-state p acls))
+      (mkdirs cluster-state p acls)) ;; 创建各个子节点
     (reify
       StormClusterState
 
